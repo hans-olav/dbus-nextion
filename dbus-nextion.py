@@ -1,151 +1,113 @@
+from dbus_next.aio import MessageBus
+from dbus_next.constants import BusType
 import sys
 import time
-import dbus
 import logging
-import Adafruit_SSD1306
+import asyncio
+from nextion import Nextion, EventType
+from datetime import datetime
 
-from PIL import Image, ImageDraw, ImageFont
-
-class DbusDisplay:
+class DbusNextion:
     def __init__(self):
-        self._conn = dbus.SystemBus()
+        self._display = Nextion('/dev/ttyS0', 9600, self._display_event)
 
-        self._oled = Adafruit_SSD1306.SSD1306_128_64(rst=None)
-        self._oled.begin()
+    async def start(self):
+        await self._display.connect()
+        self._timer = asyncio.create_task(self._update_time())
 
-        self._oled.clear()
-        self._oled.display()
-        self._image = Image.new("1", (self._oled.width, self._oled.height))
+        self._bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
 
-        # Get drawing object to draw on image.
-        self._draw = ImageDraw.Draw(self._image)
-        self._font = ImageFont.truetype('/home/pi/windows_command_prompt.ttf', 16)
+        bat_introspect = await self._bus.introspect('com.victronenergy.battery.ttyUSB0', '/')
+        roof_introspect = await self._bus.introspect('com.victronenergy.solarcharger.ttyUSB1', '/')
+        ground_introspect = await self._bus.introspect('com.victronenergy.solarcharger.ttyUSB2', '/')
 
-        self._top = -2
+        bat_item = self._bus.get_proxy_object('com.victronenergy.battery.ttyUSB0', '/', bat_introspect).get_interface('com.victronenergy.BusItem')
+        roof_item = self._bus.get_proxy_object('com.victronenergy.solarcharger.ttyUSB1', '/', roof_introspect).get_interface('com.victronenergy.BusItem')
+        ground_item = self._bus.get_proxy_object('com.victronenergy.solarcharger.ttyUSB2', '/', ground_introspect).get_interface('com.victronenergy.BusItem')
 
-    def loop(self):
+        await self._process_bat_items(await bat_item.call_get_items())
+        bat_item.on_items_changed(self._process_bat_items)
+
+        await self._process_roof_solar(await roof_item.call_get_items())
+        roof_item.on_items_changed(self._process_roof_solar)
+
+        await self._process_ground_solar(await ground_item.call_get_items())
+        ground_item.on_items_changed(self._process_ground_solar)
+
+    async def _process_bat_items(self, items):
+        if '/Dc/0/Power' in items:
+            await self._display.set('Summary.xPower.val', int(round(items['/Dc/0/Power']['Value'].value * 10)))
+            await self._display.set('Electric.xPower.val', int(round(items['/Dc/0/Power']['Value'].value * 10)))
+
+        if '/Soc' in items:
+            await self._display.set('Summary.xSoc.val', int(round(items['/Soc']['Value'].value * 100)))
+            await self._display.set('Electric.xSoc.val', int(round(items['/Soc']['Value'].value * 100)))
+
+        if '/Dc/0/Current' in items:
+            await self._display.set('Electric.xCurrent.val', int(round(items['/Dc/0/Current']['Value'].value * 10)))
+
+        if '/Dc/0/Voltage' in items:
+            await self._display.set('Electric.xVoltage.val', int(round(items['/Dc/0/Voltage']['Value'].value * 100)))
+
+        if '/ConsumedAmphours' in items:
+            await self._display.set('Electric.xConsumed.val', int(round(items['/ConsumedAmphours']['Value'].value * 100)))
+
+        if '/TimeToGo' in items:
+            val = items['/TimeToGo']['Value']
+            s = '-'
+            if val.signature == 'd':
+                seconds = val.value
+                days, remainder = divmod(seconds, 60*60*24)
+                hours, remainder = divmod(remainder, 60*60)
+                minutes, remainder = divmod(remainder, 60*60)
+                s = "{}.{:02}:{:02}".format(int(days), int(hours), int(minutes))
+            await self._display.set('Electric.txtTimeLeft.txt', s)
+
+    async def _process_roof_solar(self, items):
+        await self._process_solar_items("Roof", items)
+
+    async def _process_ground_solar(self, items):
+        await self._process_solar_items("Ground", items)
+
+    async def _process_solar_items(self, loc, items):
+#        for k,v in items.items():
+ #           print(str(k) + "\t\t" + str(v))
+        if '/Yield/Power' in items:
+            await self._display.set(f'Summary.x{loc}Power.val', int(round(items['/Yield/Power']['Value'].value)))
+            await self._display.set(f'Electric.x{loc}Power.val', int(round(items['/Yield/Power']['Value'].value)))
+
+        if '/History/Daily/0/Yield' in items:
+            await self._display.set(f'Electric.x{loc}Yield.val', int(round(items['/History/Daily/0/Yield']['Value'].value*100)))
+
+        if '/History/Daily/0/MaxPower' in items:
+            await self._display.set(f'Electric.x{loc}MaxPwr.val', int(round(items['/History/Daily/0/MaxPower']['Value'].value)))
+
+    async def _update_time(self):
         while True:
-            try:
-                # Draw a black filled box to clear the image.
-                self._draw.rectangle((0, 0, self._oled.width, self._oled.height), outline=0, fill=0)
+            date_str = datetime.now().strftime("%m/%d/%y %H:%M:%S")
+            await self._display.set('Summary.txtDateTime.txt', date_str)
+            await asyncio.sleep(1 - datetime.now().microsecond/1000000 + 0.05)
 
-                self._draw_electrics()
-                self._oled.image(self._image)
-                self._oled.set_contrast(50)
+    async def _display_event(self, type_, data):
+        if type_ == EventType.STARTUP:
+            print('We have booted up!')
+        elif type_ == EventType.TOUCH:
+            print('A button (id: %d) was touched on page %d' % (data.component_id, data.page_id))
 
-                self._oled.display()
+        logging.info('Event %s data: %s', type, str(data))
 
-                #self._draw.rectangle((0,0,width,height), outline=0, fill=0)
-                #self._draw_temps(draw)
-                #self._oled.image(image)
-                #self._oled.display()
+loop = asyncio.get_event_loop()
 
-            except KeyboardInterrupt:
-                sys.exit()
-            except:
-                logging.exception('Main loop exception.')
+async def main():
+    logging.basicConfig(
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        level=logging.DEBUG,
+        handlers=[
+            logging.StreamHandler()
+        ])
 
-            time.sleep(.5)
+    handler = DbusNextion()
+    await handler.start()
+    await loop.create_future()
 
-    def _draw_electrics(self):
-        # Get stats from Dbus
-        watts = self._get_dbus_value('com.victronenergy.battery.ttyUSB0', '/Dc/0/Power')
-        amps = self._get_dbus_value('com.victronenergy.battery.ttyUSB0', '/Dc/0/Current')
-        volts = self._get_dbus_value('com.victronenergy.battery.ttyUSB0', '/Dc/0/Voltage')
-        soc = self._get_dbus_value('com.victronenergy.battery.ttyUSB0', '/Soc')
-        ah = self._get_dbus_value('com.victronenergy.battery.ttyUSB0', '/ConsumedAmphours')
-        secondsLeft = self._get_dbus_value('com.victronenergy.battery.ttyUSB0', '/TimeToGo')
-        roof = self._get_dbus_value('com.victronenergy.solarcharger.ttyUSB1', '/Yield/Power')
-        ground = self._get_dbus_value('com.victronenergy.solarcharger.ttyUSB2', '/Yield/Power')
-
-        offset = 13
-        x = 40
-        x2 = x + 4
-        y = self._top
-        self._draw.text((x,  y), "{:.2f}".format(soc), anchor="ra", font=self._font, fill=255)
-        self._draw.text((x2, y), "%", font=self._font, fill=255)
-
-        y += offset
-        self._draw.text((x, y), "{:.2f}".format(volts), anchor="ra", font=self._font, fill=255)
-        self._draw.text((x2, y), "V", font=self._font, fill=255)
-
-        y += offset
-        self._draw.text((x, y), "{:.1f}".format(amps), anchor="ra", font=self._font, fill=255)
-        self._draw.text((x2, y), "A", font=self._font, fill=255)
-
-        y += offset
-        self._draw.text((x, y), "{:.0f}".format(watts), anchor="ra", font=self._font, fill=255)
-        self._draw.text((x2, y), "W", font=self._font, fill=255)
-
-        y += offset
-        self._draw.text((x, y), "{:.2f}".format(ah), anchor="ra", font=self._font, fill=255)
-        self._draw.text((x2, y), "Ah", font=self._font, fill=255)
-
-        x = 100
-        x2 = x + 5
-        y = self._top
-        self._draw.text((x, y), "Roof", anchor="ma", font=self._font, fill=255)
-
-        y += offset
-        self._draw.text((x,  y), "{:.0f}".format(roof), anchor="ra", font=self._font, fill=255)
-        self._draw.text((x2, y), "W", font=self._font, fill=255)
-
-        y += offset
-        self._draw.text((x, y), "Ground", anchor="ma", font=self._font, fill=255)
-
-        y += offset
-        self._draw.text((x, y), "{:.0f}".format(ground), anchor="ra", font=self._font, fill=255)
-        self._draw.text((x2, y), "W", font=self._font, fill=255)
-
-        y += (offset + 1)
-
-        s = "-"
-        if isinstance(secondsLeft, dbus.Double):
-            days, remainder = divmod(secondsLeft, 60*60*24)
-            hours, remainder = divmod(remainder, 60*60)
-            minutes, remainder = divmod(remainder, 60*60)
-            s = "{}.{:02}:{:02}".format(int(days), int(hours), int(minutes))
-
-        self._draw.text((x, y), s, anchor="ma", font=self._font, fill=255)
-
-    def _draw_temps(self):
-        offset = 20
-
-        x = 0
-        x2 = 60
-        x3 = x2 + 5
-        x4 = 116
-        x5 = x4 + 5
-        y = self._top
-        self._draw.text((x, y), "In", font=font, fill=255)
-        self._draw.text((x2, y), "15.6", anchor="ra", font=font, fill=255)
-        self._draw.text((x3, y), "°c", font=font, fill=255)
-
-        self._draw.text((x4, y), "96.8", anchor="ra", font=font, fill=255)
-        self._draw.text((x5, y), "%", font=font, fill=255)
-
-        y += offset
-        self._draw.text((x, y), "Out", font=font, fill=255)
-        self._draw.text((x2, y), "1.6", anchor="ra", font=font, fill=255)
-        self._draw.text((x3, y), "°c", font=font, fill=255)
-
-        self._draw.text((x4, y), "48.8", anchor="ra", font=font, fill=255)
-        self._draw.text((x5, y), "%", font=font, fill=255)
-
-        y += offset
-        self._draw.text((x, y), "Rfg", font=font, fill=255)
-        self._draw.text((x2, y), "4.6", anchor="ra", font=font, fill=255)
-        self._draw.text((x3, y), "°c", font=font, fill=255)
-
-        self._draw.text((x4, y), "60.8", anchor="ra", font=font, fill=255)
-        self._draw.text((x5, y), "%", font=font, fill=255)
-
-    def _get_dbus_value(self, service, path):
-        return self._conn.call_blocking(service, path, None, 'GetValue', '', [])
-
-def main():
-    display = DbusDisplay()
-    display.loop()
-
-if __name__ == '__main__':
-    main()
+loop.run_until_complete(main())
