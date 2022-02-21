@@ -61,6 +61,10 @@ class DbusNextion:
         if '/ConsumedAmphours' in items:
             await self._display.set('Electric.xConsumed.val', int(round(items['/ConsumedAmphours']['Value'].value * 100)))
 
+        if '/Dc/0/Temperature' in items:
+            await self._display.set('Temps.vaBattTempC.val', int(round(items['/Dc/0/Temperature']['Value'].value * 10)))
+            await self._trigger_temp_change()
+
         if '/TimeToGo' in items:
             val = items['/TimeToGo']['Value']
             s = '-'
@@ -71,6 +75,12 @@ class DbusNextion:
                 minutes, remainder = divmod(remainder, 60*60)
                 s = "{}.{:02}:{:02}".format(int(days), int(hours), int(minutes))
             await self._display.set('Electric.txtTimeLeft.txt', s)
+
+    async def _trigger_temp_change(self):
+        """Triggers the timers that convert and populate the temps on the pages."""
+
+        await self._display.set('Summary.tmrLoadTemps.en', 1)
+        await self._display.set('Temps.tmrLoadTemps.en', 1)
 
     async def _process_roof_solar(self, items):
         await self._process_solar_items("Roof", items)
@@ -116,7 +126,7 @@ async def main():
 
     logging.basicConfig(
         format='%(asctime)s - %(levelname)s - %(message)s',
-        level=logging.INFO,
+        level=logging.DEBUG,
         handlers=[
             logging.StreamHandler()
         ])
