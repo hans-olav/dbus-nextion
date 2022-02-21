@@ -8,15 +8,19 @@ from nextion import Nextion, EventType
 from datetime import datetime
 
 class DbusNextion:
+    """Main class"""
     def __init__(self):
         self._display = Nextion('/dev/ttyS0', 9600, self._display_event)
 
     async def start(self):
+        """Connects to the display, populates initial data and hooks up callbacks."""
+
         await self._display.connect()
         self._timer = asyncio.create_task(self._update_time())
 
         self._bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
 
+        # Get dbus objects.
         bat_introspect = await self._bus.introspect('com.victronenergy.battery.ttyUSB0', '/')
         roof_introspect = await self._bus.introspect('com.victronenergy.solarcharger.ttyUSB1', '/')
         ground_introspect = await self._bus.introspect('com.victronenergy.solarcharger.ttyUSB2', '/')
@@ -25,16 +29,21 @@ class DbusNextion:
         roof_item = self._bus.get_proxy_object('com.victronenergy.solarcharger.ttyUSB1', '/', roof_introspect).get_interface('com.victronenergy.BusItem')
         ground_item = self._bus.get_proxy_object('com.victronenergy.solarcharger.ttyUSB2', '/', ground_introspect).get_interface('com.victronenergy.BusItem')
 
+        # Battery monitor
         await self._process_bat_items(await bat_item.call_get_items())
         bat_item.on_items_changed(self._process_bat_items)
 
+        # Solar charger roof
         await self._process_roof_solar(await roof_item.call_get_items())
         roof_item.on_items_changed(self._process_roof_solar)
 
+        # Solar charger ground.
         await self._process_ground_solar(await ground_item.call_get_items())
         ground_item.on_items_changed(self._process_ground_solar)
 
     async def _process_bat_items(self, items):
+        """Processes changes to battery monitor values."""
+
         if '/Dc/0/Power' in items:
             await self._display.set('Summary.xPower.val', int(round(items['/Dc/0/Power']['Value'].value * 10)))
             await self._display.set('Electric.xPower.val', int(round(items['/Dc/0/Power']['Value'].value * 10)))
@@ -70,8 +79,8 @@ class DbusNextion:
         await self._process_solar_items("Ground", items)
 
     async def _process_solar_items(self, loc, items):
-#        for k,v in items.items():
- #           print(str(k) + "\t\t" + str(v))
+        """Processes changes to solar charger values."""
+
         if '/Yield/Power' in items:
             await self._display.set(f'Summary.x{loc}Power.val', int(round(items['/Yield/Power']['Value'].value)))
             await self._display.set(f'Electric.x{loc}Power.val', int(round(items['/Yield/Power']['Value'].value)))
@@ -83,12 +92,16 @@ class DbusNextion:
             await self._display.set(f'Electric.x{loc}MaxPwr.val', int(round(items['/History/Daily/0/MaxPower']['Value'].value)))
 
     async def _update_time(self):
+        """Forever loop that updates the date/time on the display."""
+
         while True:
             date_str = datetime.now().strftime("%m/%d/%y %H:%M:%S")
             await self._display.set('Summary.txtDateTime.txt', date_str)
-            await asyncio.sleep(1 - datetime.now().microsecond/1000000 + 0.05)
+            await asyncio.sleep(1 - datetime.now().microsecond/1000000 + 0.05) # Align execution with second boundary.
 
     async def _display_event(self, type_, data):
+        """Display callback. Not doing much for now."""
+
         if type_ == EventType.STARTUP:
             print('We have booted up!')
         elif type_ == EventType.TOUCH:
@@ -99,9 +112,11 @@ class DbusNextion:
 loop = asyncio.get_event_loop()
 
 async def main():
+    """Main method. Set up logging, event loop and start running."""
+
     logging.basicConfig(
         format='%(asctime)s - %(levelname)s - %(message)s',
-        level=logging.DEBUG,
+        level=logging.INFO,
         handlers=[
             logging.StreamHandler()
         ])
