@@ -4,8 +4,10 @@ import sys
 import time
 import logging
 import asyncio
+import json
 from nextion import Nextion, EventType
 from datetime import datetime
+from asyncio_mqtt import Client
 
 class DbusNextion:
     """Main class"""
@@ -17,6 +19,7 @@ class DbusNextion:
 
         await self._display.connect()
         self._timer = asyncio.create_task(self._update_time())
+        self._mqtt = asyncio.create_task(self._mqtt_consumer())
 
         self._bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
 
@@ -100,6 +103,18 @@ class DbusNextion:
 
         if '/History/Daily/0/MaxPower' in items:
             await self._display.set(f'Electric.x{loc}MaxPwr.val', int(round(items['/History/Daily/0/MaxPower']['Value'].value)))
+
+    async def _mqtt_consumer(self):
+        """Update temperatures from Govee sensors published via MQTT."""
+
+        async with Client('localhost') as client:
+            async with client.filtered_messages("govee/+") as messages:
+                await client.subscribe("govee/#")
+                async for message in messages:
+                    payload = json.loads(message.payload.decode())
+                    await self._display.set('Temps.vaRfgTempC.val', int(round(payload['temp'] * 10)))
+                    await self._display.set('Temps.xRfgHum.val', int(round(payload['humidity'] * 10)))
+                    await self._trigger_temp_change()
 
     async def _update_time(self):
         """Forever loop that updates the date/time on the display."""
