@@ -9,17 +9,28 @@ from nextion import Nextion, EventType
 from datetime import datetime
 from asyncio_mqtt import Client
 
+class TempMapping:
+    def __init__(self, lcd_name, has_minmax, has_summary):
+        self.lcd_name = lcd_name
+        self.has_minmax = has_minmax
+        self.has_summary = has_summary
+
 class DbusNextion:
     """Main class"""
     def __init__(self):
         self._display = Nextion('/dev/ttyS0', 9600, self._display_event)
+        self._temphum_mappings = {
+            'fridge':  TempMapping('Rfg',     False, False),
+            'storage': TempMapping('Storage', False, False),
+            'inside':  TempMapping('In',      True,  True),
+            'outside': TempMapping('Out',     True,  True) }
 
     async def start(self):
         """Connects to the display, populates initial data and hooks up callbacks."""
 
         await self._display.connect()
-        self._timer = asyncio.create_task(self._update_time())
-        self._mqtt = asyncio.create_task(self._mqtt_consumer())
+        asyncio.create_task(self._update_time())
+        asyncio.create_task(self._mqtt_consumer())
 
         self._bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
 
@@ -107,14 +118,34 @@ class DbusNextion:
     async def _mqtt_consumer(self):
         """Update temperatures from Govee sensors published via MQTT."""
 
-        async with Client('localhost') as client:
-            async with client.filtered_messages("govee/+") as messages:
-                await client.subscribe("govee/#")
-                async for message in messages:
-                    payload = json.loads(message.payload.decode())
-                    await self._display.set('Temps.vaRfgTempC.val', int(round(payload['temp'] * 10)))
-                    await self._display.set('Temps.xRfgHum.val', int(round(payload['humidity'] * 10)))
-                    await self._trigger_temp_change()
+        while True:
+            try:
+                async with Client('localhost') as client:
+                    async with client.filtered_messages("temphum/+") as messages:
+                        await client.subscribe("temphum/#")
+                        async for message in messages:
+                            payload = json.loads(message.payload.decode())
+                            mapping = self._temphum_mappings.get(message.topic.split('/')[-1])
+
+                            if mapping != None:
+                                name = mapping.lcd_name
+                                await self._display.set(f'Temps.va{name}TempC.val', int(round(payload['temp']['current'] * 10)))
+                                await self._display.set(f'Temps.x{name}Hum.val', int(round(payload['humidity']['current'] * 10)))
+
+                                if mapping.has_minmax:
+                                    await self._display.set(f'Temps.va{name}MinTempC.val', int(round(payload['temp']['min'] * 10)))
+                                    await self._display.set(f'Temps.va{name}MaxTempC.val', int(round(payload['temp']['max'] * 10)))
+                                    await self._display.set(f'Temps.x{name}MinHum.val', int(round(payload['humidity']['min'] * 10)))
+                                    await self._display.set(f'Temps.x{name}MaxHum.val', int(round(payload['humidity']['max'] * 10)))
+
+                                if mapping.has_summary:
+                                    await self._display.set(f'Summary.x{name}Hum.val', int(round(payload['humidity']['current'] * 10)))
+
+                            await self._trigger_temp_change()
+            except MqttError as error:
+                print(f'Error "{error}". Reconnecting...')
+            finally:
+                await asyncio.sleep(reconnect_interval)
 
     async def _update_time(self):
         """Forever loop that updates the date/time on the display."""
@@ -140,7 +171,7 @@ async def main():
     """Main method. Set up logging, event loop and start running."""
 
     logging.basicConfig(
-        format='%(asctime)s - %(levelname)s - %(message)s',
+        format='%(asctime)s %(levelname)s - %(message)s',
         level=logging.DEBUG,
         handlers=[
             logging.StreamHandler()
