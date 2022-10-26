@@ -5,3 +5,9 @@ The display takes about 40 mA @ 5V = 0.2 W. It's run by a [Raspberry Pi Zero 2 W
 
 ![Screenshot](/screenshot.png)
 
+This may be required to avoid [this](https://stackoverflow.com/questions/72980064/from-typing-extensions-import-paramspec-importerror-cannot-import-name-paramsp) issue:
+```
+pip uninstall typing_extensions
+pip uninstall fastapi
+pip install --no-cache fastapi
+```
