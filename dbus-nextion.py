@@ -4,7 +4,6 @@ import sys
 import time
 import logging
 import asyncio
-import json
 from nextion import Nextion, EventType
 from datetime import datetime
 from asyncio_mqtt import Client
@@ -121,27 +120,44 @@ class DbusNextion:
         while True:
             try:
                 async with Client('localhost', username='pi', password='Yukon900!') as client:
-                    async with client.filtered_messages("temphum/+") as messages:
+                    async with client.filtered_messages("temphum/+/+/+") as messages:
                         await client.subscribe("temphum/#")
                         async for message in messages:
-                            payload = json.loads(message.payload.decode())
-                            mapping = self._temphum_mappings.get(message.topic.split('/')[-1])
+                            split = message.topic.split('/') # ex: 'temphum/fridge/temp/current'
+
+                            name = split[1]   # sensor name
+                            temphum = split[2] # 'temp' or 'humidity'
+                            dim = split[3]    # 'current', 'min', 'max'
+
+                            if temphum == 'temp':
+                                temphum = 'TempC'
+                                prefix = 'va'
+                            elif temphum == 'humidity':
+                                temphum = 'Hum'
+                                prefix = 'x'
+                            else:
+                                continue
+
+                            if dim == 'current':
+                                suffix = ''
+                            elif dim == 'min' or dim == 'max':
+                                suffix = dim.capitalize()
+                            else:
+                                continue
+
+                            value = int(round(float(message.payload.decode()) * 10))
+                            mapping = self._temphum_mappings.get(name)
 
                             if mapping != None:
-                                name = mapping.lcd_name
-                                await self._display.set(f'Temps.va{name}TempC.val', int(round(payload['temp']['current'] * 10)))
-                                await self._display.set(f'Temps.x{name}Hum.val', int(round(payload['humidity']['current'] * 10)))
+                                lcd_name = mapping.lcd_name
+                                if dim == 'current' or mapping.has_minmax:
+                                    await self._display.set(f'Temps.{prefix}{lcd_name}{suffix}{temphum}.val', value)
+                                    if temphum == "TempC":
+                                        await self._trigger_temp_change()
 
-                                if mapping.has_minmax:
-                                    await self._display.set(f'Temps.va{name}MinTempC.val', int(round(payload['temp']['min'] * 10)))
-                                    await self._display.set(f'Temps.va{name}MaxTempC.val', int(round(payload['temp']['max'] * 10)))
-                                    await self._display.set(f'Temps.x{name}MinHum.val', int(round(payload['humidity']['min'] * 10)))
-                                    await self._display.set(f'Temps.x{name}MaxHum.val', int(round(payload['humidity']['max'] * 10)))
+                                if dim == 'current' and temphum == 'Hum' and mapping.has_summary:
+                                    await self._display.set(f'Summary.x{lcd_name}Hum.val', value)
 
-                                if mapping.has_summary:
-                                    await self._display.set(f'Summary.x{name}Hum.val', int(round(payload['humidity']['current'] * 10)))
-
-                            await self._trigger_temp_change()
             except MqttError as error:
                 print(f'Error "{error}". Reconnecting...')
             finally:
