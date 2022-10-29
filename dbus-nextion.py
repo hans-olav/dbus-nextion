@@ -120,7 +120,7 @@ class DbusNextion:
 
         while True:
             try:
-                async with Client('localhost') as client:
+                async with Client('localhost', username='pi', password='Yukon900!') as client:
                     async with client.filtered_messages("temphum/+") as messages:
                         await client.subscribe("temphum/#")
                         async for message in messages:
